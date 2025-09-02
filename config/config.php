@@ -1,4 +1,3 @@
-// HOMOLOG
 <?php
 $host = "localhost";
 $dbname = "jztecc30_envios";
@@ -12,4 +11,5 @@ try {
     die("Erro na conexão com o banco de dados: " . $e->getMessage());
 }
 ?>
+
 
