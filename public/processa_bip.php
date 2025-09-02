@@ -1,5 +1,5 @@
 <?php
-// processa_bip.php — gravação do bip usando a "data de trabalho" (hoje ou futura)
+// public/processa_bip.php — grava o bip usando a "data de trabalho"
 declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
@@ -19,7 +19,7 @@ $usuario = (string)($_SESSION['usuario'] ?? '');
 // 2) Entrada
 $codigo = trim((string)($_POST['codigo_barras'] ?? ''));
 
-// 3) Data de trabalho (POST tem prioridade; fallback = sessão; default = hoje)
+// 3) Data de trabalho (POST > sessão > hoje)
 $dataTrabalho = (string)($_POST['data_trabalho'] ?? ($_SESSION['data_trabalho'] ?? date('Y-m-d')));
 
 // Valida formato YYYY-MM-DD; se inválido, volta para hoje
@@ -27,10 +27,6 @@ $dt = DateTime::createFromFormat('Y-m-d', $dataTrabalho);
 $okFormato = $dt && $dt->format('Y-m-d') === $dataTrabalho;
 if (!$okFormato) {
   $dataTrabalho = date('Y-m-d');
-} else {
-  // Se quiser bloquear datas passadas, descomente:
-  // $hoje = new DateTime('today');
-  // if ($dt < $hoje) { $dataTrabalho = $hoje->format('Y-m-d'); }
 }
 
 // Horário final a gravar: usa a HORA atual com a DATA de trabalho escolhida
@@ -44,14 +40,13 @@ if ($len < 10 || $len > 20) {
 }
 
 try {
-  // 5) Verifica duplicidade (único no sistema inteiro, independente de data)
+  // 5) Verifica duplicidade (único no sistema todo)
   $stmt = $conn->prepare("SELECT id, codigo, usuario, horario FROM bipagens WHERE codigo = :codigo LIMIT 1");
   $stmt->execute([':codigo' => $codigo]);
   $duplicado = $stmt->fetch();
 
   if ($duplicado) {
-    // Calcula o lote do DUPLICADO respeitando o DIA em que ele foi registrado
-    // (antes usava CURDATE(); agora usamos a data do próprio duplicado)
+    // Calcula o lote do DUPLICADO usando a data do próprio registro duplicado
     $stmtLote = $conn->prepare(
       "SELECT COUNT(*) AS posicao
          FROM bipagens
@@ -65,7 +60,6 @@ try {
     $posicao = (int)($stmtLote->fetch()['posicao'] ?? 0);
     $lote    = max(1, (int)ceil($posicao / 10));
 
-    // Guarda para a tela de erro
     $_SESSION['erro_duplicado'] = [
       'codigo' => $codigo,
       'lote'   => $lote,
