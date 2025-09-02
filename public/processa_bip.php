@@ -1,46 +1,97 @@
 <?php
-session_start();
-header('Content-Type: application/json');
-require_once '../config/config.php';
+// processa_bip.php — gravação do bip usando a "data de trabalho" (hoje ou futura)
+declare(strict_types=1);
 
-if (!isset($_SESSION['usuario'])) {
-    echo json_encode(['status' => 'error', 'mensagem' => 'Usuário não autenticado.']);
-    exit;
+header('Content-Type: application/json; charset=utf-8');
+
+if (session_status() !== PHP_SESSION_ACTIVE) { session_start(); }
+
+require __DIR__ . '/../config/config.php'; // expõe $conn (PDO)
+
+// 1) Autenticação
+if (empty($_SESSION['usuario'])) {
+  echo json_encode(['status' => 'error', 'mensagem' => 'Usuário não autenticado.']);
+  exit;
 }
 
-$codigo = $_POST['codigo_barras'] ?? '';
-$usuario = $_SESSION['usuario'] ?? '';
+$usuario = (string)($_SESSION['usuario'] ?? '');
 
-// Validação de tamanho
-if (strlen($codigo) < 10 || strlen($codigo) > 20) {
-    echo json_encode(['status' => 'error', 'mensagem' => 'O código deve ter entre 10 e 20 caracteres.']);
-    exit;
+// 2) Entrada
+$codigo = trim((string)($_POST['codigo_barras'] ?? ''));
+
+// 3) Data de trabalho (POST tem prioridade; fallback = sessão; default = hoje)
+$dataTrabalho = (string)($_POST['data_trabalho'] ?? ($_SESSION['data_trabalho'] ?? date('Y-m-d')));
+
+// Valida formato YYYY-MM-DD; se inválido, volta para hoje
+$dt = DateTime::createFromFormat('Y-m-d', $dataTrabalho);
+$okFormato = $dt && $dt->format('Y-m-d') === $dataTrabalho;
+if (!$okFormato) {
+  $dataTrabalho = date('Y-m-d');
+} else {
+  // Se quiser bloquear datas passadas, descomente:
+  // $hoje = new DateTime('today');
+  // if ($dt < $hoje) { $dataTrabalho = $hoje->format('Y-m-d'); }
 }
 
-// Verifica duplicidade
-$stmt = $conn->prepare("SELECT * FROM bipagens WHERE codigo = :codigo LIMIT 1");
-$stmt->execute(['codigo' => $codigo]);
-$duplicado = $stmt->fetch(PDO::FETCH_ASSOC);
+// Horário final a gravar: usa a HORA atual com a DATA de trabalho escolhida
+$horarioParaInsert = $dataTrabalho . ' ' . date('H:i:s');
 
-if ($duplicado) {
-    // Conta quantos códigos existem antes do código duplicado para calcular o lote
-    $stmtLote = $conn->prepare("SELECT COUNT(*) as posicao FROM bipagens WHERE id <= :id AND DATE(horario) = CURDATE()");
-    $stmtLote->execute(['id' => $duplicado['id']]);
-    $posicao = $stmtLote->fetch(PDO::FETCH_ASSOC)['posicao'];
+// 4) Validação do código
+$len = strlen($codigo);
+if ($len < 10 || $len > 20) {
+  echo json_encode(['status' => 'error', 'mensagem' => 'O código deve ter entre 10 e 20 caracteres.']);
+  exit;
+}
 
-    $lote = ceil($posicao / 10);
+try {
+  // 5) Verifica duplicidade (único no sistema inteiro, independente de data)
+  $stmt = $conn->prepare("SELECT id, codigo, usuario, horario FROM bipagens WHERE codigo = :codigo LIMIT 1");
+  $stmt->execute([':codigo' => $codigo]);
+  $duplicado = $stmt->fetch();
 
-    $_SESSION['erro_duplicado'] = ['codigo' => $codigo, 'lote' => $lote];
+  if ($duplicado) {
+    // Calcula o lote do DUPLICADO respeitando o DIA em que ele foi registrado
+    // (antes usava CURDATE(); agora usamos a data do próprio duplicado)
+    $stmtLote = $conn->prepare(
+      "SELECT COUNT(*) AS posicao
+         FROM bipagens
+        WHERE DATE(horario) = DATE(:horario_dup)
+          AND id <= :id_dup"
+    );
+    $stmtLote->execute([
+      ':horario_dup' => $duplicado['horario'],
+      ':id_dup'      => $duplicado['id'],
+    ]);
+    $posicao = (int)($stmtLote->fetch()['posicao'] ?? 0);
+    $lote    = max(1, (int)ceil($posicao / 10));
+
+    // Guarda para a tela de erro
+    $_SESSION['erro_duplicado'] = [
+      'codigo' => $codigo,
+      'lote'   => $lote,
+    ];
 
     echo json_encode(['status' => 'redirect', 'location' => 'lista_erro_lotes.php']);
     exit;
-}
+  }
 
-// Inserindo novo código
-$sqlInsert = "INSERT INTO bipagens (codigo, usuario) VALUES (:codigo, :usuario)";
-$stmtInsert = $conn->prepare($sqlInsert);
-if ($stmtInsert->execute(['codigo' => $codigo, 'usuario' => $usuario])) {
+  // 6) Insere novo bip (com a data de trabalho no campo `horario`)
+  $stmtInsert = $conn->prepare(
+    "INSERT INTO bipagens (codigo, usuario, horario)
+     VALUES (:codigo, :usuario, :horario)"
+  );
+
+  $ok = $stmtInsert->execute([
+    ':codigo'  => $codigo,
+    ':usuario' => $usuario,
+    ':horario' => $horarioParaInsert,
+  ]);
+
+  if ($ok) {
     echo json_encode(['status' => 'success', 'mensagem' => '✅ Código registrado com sucesso!']);
-} else {
+  } else {
     echo json_encode(['status' => 'error', 'mensagem' => 'Erro ao tentar registrar o código.']);
+  }
+} catch (Throwable $e) {
+  echo json_encode(['status' => 'error', 'mensagem' => 'Falha inesperada ao registrar o código.']);
 }
