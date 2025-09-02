@@ -1,120 +1,109 @@
 <?php
-header('Content-Type: text/html; charset=UTF-8');
-mb_internal_encoding('UTF-8');
-session_start();
+// cadastrar_bip.php — tela com seletor de "Data de trabalho" (hoje ou futura)
+declare(strict_types=1);
 
-if (!isset($_SESSION['usuario'])) {
-    header("Location: ../index.php");
-    exit();
+if (session_status() !== PHP_SESSION_ACTIVE) { session_start(); }
+
+// 1) Atualiza a data de trabalho (POST do seletor)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['definir_data'])) {
+  $d  = (string)($_POST['data_trabalho'] ?? '');
+  $dt = DateTime::createFromFormat('Y-m-d', $d);
+  if ($dt && $dt->format('Y-m-d') === $d) {
+    // Se desejar impedir datas passadas, valide aqui antes de salvar
+    $_SESSION['data_trabalho'] = $d;
+  }
+  header('Location: cadastrar_bip.php');
+  exit;
 }
 
-$nome = $_SESSION['usuario'] ?? 'Usuário';
-$perfil = $_SESSION['perfil'] ?? 'user';
+// Data ativa (default = hoje)
+$dataAtualTrabalho = $_SESSION['data_trabalho'] ?? date('Y-m-d');
 
-require_once '../config/config.php';
+// Segurança mínima: exige login
+if (empty($_SESSION['usuario'])) {
+  header('Location: index.php');
+  exit;
+}
+
+include __DIR__ . '/../includes/header.php';
 ?>
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <title>Cadastro de Bips - MULTCABOS</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-100 flex flex-col min-h-screen">
+<div style="max-width:760px;margin:16px auto;padding:0 12px;">
+  <div style="display:flex;align-items:center;gap:12px;margin:8px 0 4px;">
+    <img src="../logo/logo.png" alt="Logo" style="height:40px;">
+    <h1 style="margin:0;font-size:1.4rem;">Cadastrar Bips</h1>
+  </div>
 
-<?php include_once '../includes/header.php'; ?>
-<?php include_once '../includes/voltar_dashboard.php'; ?>
+  <!-- Seletor de Data de Trabalho -->
+  <form method="post" style="margin:12px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <label for="data_trabalho"><strong>Data de trabalho:</strong></label>
+    <input
+      type="date"
+      id="data_trabalho"
+      name="data_trabalho"
+      value="<?= htmlspecialchars($dataAtualTrabalho) ?>"
+      min="<?= date('Y-m-d') ?>"  <!-- permite hoje e futuro; remova o min para permitir passado -->
+      style="padding:6px 8px"
+    >
+    <button type="submit" name="definir_data" style="padding:6px 10px;">Usar essa data</button>
+    <span style="opacity:.75;">(Ativa: <?= htmlspecialchars(date('d/m/Y', strtotime($dataAtualTrabalho))) ?>)</span>
+  </form>
 
-<main class="flex-grow flex items-center justify-center px-4">
-    <div class="bg-white shadow-lg rounded-xl p-8 w-full max-w-md text-center">
-        <img src="logo.png" alt="Logo Multcabos" class="mx-auto mb-4 h-12">
-        <h2 class="text-xl font-semibold text-gray-800 mb-4">Aponte o leitor de código de barras</h2>
-        <form id="form_codigo">
-            <input type="text" id="codigo_barras" name="codigo_barras" placeholder="Insira o código" autocomplete="off" autofocus
-                   class="w-full border border-gray-300 rounded-md px-4 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <div id="mensagem" class="mt-4 text-sm font-medium"></div>
-        </form>
-    </div>
-</main>
+  <hr style="margin:12px 0;">
 
-<footer class="bg-white text-center text-sm py-4 mt-auto shadow-inner">
-    <p class="text-gray-500">© 2025 <strong>MULTCABOS</strong> | Desenvolvido por <strong>Infolondrina</strong></p>
-</footer>
+  <p style="margin:8px 0 12px;">Aponte o leitor de código de barras para o campo abaixo (ou digite e pressione Enter).</p>
 
-<audio id="sucessoSound" src="sucesso.mp3" preload="auto"></audio>
-<audio id="erroSound" src="error.mp3" preload="auto"></audio>
+  <!-- Formulário simples de bip (funciona com leitores que simulam teclado) -->
+  <form id="form-bip" style="display:flex;gap:8px;flex-wrap:wrap;" onsubmit="return enviarBip(event);">
+    <input
+      type="text"
+      name="codigo_barras"
+      id="codigo_barras"
+      inputmode="numeric"
+      autocomplete="off"
+      autofocus
+      placeholder="Leia o código de barras"
+      minlength="10"
+      maxlength="20"
+      required
+      style="flex:1;min-width:260px;padding:10px 12px;font-size:1rem;"
+    >
+    <button type="submit" style="padding:10px 12px;">Registrar</button>
+  </form>
 
-<script>
-    document.addEventListener("DOMContentLoaded", function () {
-        const input = document.getElementById('codigo_barras');
-        const mensagem = document.getElementById('mensagem');
-        const sucessoSound = document.getElementById('sucessoSound');
-        const erroSound = document.getElementById('erroSound');
+  <div id="mensagem" style="margin-top:10px;"></div>
 
-        input.addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                let codigo = input.value.trim();
+  <script>
+    async function enviarBip(e){
+      e.preventDefault();
+      const form = document.getElementById('form-bip');
+      const inp  = document.getElementById('codigo_barras');
+      const msg  = document.getElementById('mensagem');
 
-                // Validação de tamanho
-                if (codigo.length < 10 || codigo.length > 20) {
-                    erroSound.pause();
-                    erroSound.currentTime = 0;
-                    erroSound.play();
+      const dados = new FormData();
+      dados.append('codigo_barras', inp.value);
+      // data_trabalho vai por sessão; mas enviamos também por redundância:
+      dados.append('data_trabalho', '<?= htmlspecialchars($dataAtualTrabalho) ?>');
 
-                    alert('❌ O código deve ter entre 10 e 20 caracteres.');
-                    input.value = '';
-                    input.focus();
-                    return;
-                }
+      msg.textContent = 'Enviando...';
 
-                fetch('processa_bip.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: 'codigo_barras=' + encodeURIComponent(codigo)
-                })
-                    .then(response => response.json())
-                    .then(data => {
-                        mensagem.textContent = data.mensagem;
-                        mensagem.className = 'mt-4 text-sm font-medium ' +
-                            (data.status === 'success' ? 'text-green-600' : 'text-red-600');
+      try {
+        const r = await fetch('processa_bip.php', { method: 'POST', body: dados });
+        const j = await r.json();
+        if (j.status === 'success') {
+          msg.textContent = j.mensagem || 'Registrado.';
+          inp.value = '';
+          inp.focus();
+        } else if (j.status === 'redirect' && j.location) {
+          window.location.href = j.location;
+        } else {
+          msg.textContent = j.mensagem || 'Falha ao registrar.';
+        }
+      } catch (err) {
+        msg.textContent = 'Erro de comunicação.';
+      }
 
-                        input.value = '';
-                        input.focus();
-
-                        if (data.status === 'success') {
-                            sucessoSound.pause();
-                            sucessoSound.currentTime = 0;
-                            sucessoSound.play();
-                        } else if (data.status === 'error') {
-                            erroSound.pause();
-                            erroSound.currentTime = 0;
-                            erroSound.play();
-                        }
-
-                        if (data.status === 'redirect') {
-                            erroSound.pause();
-                            erroSound.currentTime = 0;
-                            erroSound.play();
-
-                            setTimeout(() => {
-                                window.location.href = data.location;
-                            }, 300);
-                        }
-                    })
-                    .catch(() => {
-                        erroSound.pause();
-                        erroSound.currentTime = 0;
-                        erroSound.play();
-                        alert('Erro ao tentar registrar. Tente novamente.');
-                        input.value = '';
-                        input.focus();
-                    });
-            }
-        });
-    });
-</script>
-
-</body>
-</html>
+      return false;
+    }
+  </script>
+</div>
+<?php include __DIR__ . '/../includes/footer.php'; ?>
