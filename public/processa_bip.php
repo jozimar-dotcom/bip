@@ -1,91 +1,131 @@
 <?php
-// public/processa_bip.php — grava o bip usando a "data de trabalho"
 declare(strict_types=1);
+session_start();
+require_once __DIR__ . '/../config/config.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
-if (session_status() !== PHP_SESSION_ACTIVE) { session_start(); }
-
-require __DIR__ . '/../config/config.php'; // expõe $conn (PDO)
-
-// 1) Autenticação
 if (empty($_SESSION['usuario'])) {
-  echo json_encode(['status' => 'error', 'mensagem' => 'Usuário não autenticado.']);
-  exit;
+  echo json_encode(['ok'=>false,'mensagem'=>'Sessão expirada.']); exit;
 }
 
-$usuario = (string)($_SESSION['usuario'] ?? '');
+$usuarioLogin   = $_SESSION['usuario'];
+$usuarioId      = (int)($_SESSION['id'] ?? 0);
+$etapaPermitida = strtolower($_SESSION['etapa_permitida'] ?? $_SESSION['perfil'] ?? 'estoque');
+$dataTrabalho   = $_SESSION['data_trabalho'] ?? date('Y-m-d');
 
-// 2) Entrada
-$codigo = trim((string)($_POST['codigo_barras'] ?? ''));
+$raw = file_get_contents('php://input');
+$payload = json_decode($raw, true);
+$codigo = trim($payload['codigo'] ?? '');
 
-// 3) Data de trabalho (POST > sessão > hoje)
-$dataTrabalho = (string)($_POST['data_trabalho'] ?? ($_SESSION['data_trabalho'] ?? date('Y-m-d')));
-
-// Valida formato YYYY-MM-DD; se inválido, volta para hoje
-$dt = DateTime::createFromFormat('Y-m-d', $dataTrabalho);
-$okFormato = $dt && $dt->format('Y-m-d') === $dataTrabalho;
-if (!$okFormato) {
-  $dataTrabalho = date('Y-m-d');
+if ($codigo === '' || strlen($codigo) < 12 || strlen($codigo) > 20) {
+  echo json_encode(['ok'=>false,'mensagem'=>'O código deve ter entre 12 e 20 caracteres.']); exit;
 }
 
-// Horário final a gravar: usa a HORA atual com a DATA de trabalho escolhida
-$horarioParaInsert = $dataTrabalho . ' ' . date('H:i:s');
-
-// 4) Validação do código
-$len = strlen($codigo);
-if ($len < 10 || $len > 20) {
-  echo json_encode(['status' => 'error', 'mensagem' => 'O código deve ter entre 10 e 20 caracteres.']);
-  exit;
+// Helpers
+function etapaOrdem(string $et): int {
+  $map = ['estoque'=>1,'embalagem'=>2,'conferencia'=>3];
+  return $map[$et] ?? 0;
+}
+function proximaEtapaFila(string $fila): string {
+  switch ($fila) {
+    case 'estoque':     return 'embalagem';
+    case 'embalagem':   return 'conferencia';
+    case 'conferencia': return 'conferencia';
+    default:            return 'embalagem';
+  }
 }
 
 try {
-  // 5) Verifica duplicidade (único no sistema todo)
-  $stmt = $conn->prepare("SELECT id, codigo, usuario, horario FROM bipagens WHERE codigo = :codigo LIMIT 1");
-  $stmt->execute([':codigo' => $codigo]);
-  $duplicado = $stmt->fetch();
+  /** @var PDO $conn */
+  $conn->beginTransaction();
 
-  if ($duplicado) {
-    // Calcula o lote do DUPLICADO usando a data do próprio registro duplicado
-    $stmtLote = $conn->prepare(
-      "SELECT COUNT(*) AS posicao
-         FROM bipagens
-        WHERE DATE(horario) = DATE(:horario_dup)
-          AND id <= :id_dup"
-    );
-    $stmtLote->execute([
-      ':horario_dup' => $duplicado['horario'],
-      ':id_dup'      => $duplicado['id'],
-    ]);
-    $posicao = (int)($stmtLote->fetch()['posicao'] ?? 0);
-    $lote    = max(1, (int)ceil($posicao / 10));
+  // 1) Obtém (ou cria) id do código
+  $stmt = $conn->prepare("SELECT id FROM codigos WHERE codigo = ?");
+  $stmt->execute([$codigo]);
+  $codigoId = $stmt->fetchColumn();
+  if (!$codigoId) {
+    $stmt = $conn->prepare("INSERT INTO codigos (codigo) VALUES (?)");
+    $stmt->execute([$codigo]);
+    $codigoId = (int)$conn->lastInsertId();
+  }
 
-    $_SESSION['erro_duplicado'] = [
-      'codigo' => $codigo,
-      'lote'   => $lote,
+  // 2) Busca movimentos do DIA ATIVO
+  $sqlMov = "
+    SELECT m.id, m.etapa, m.horario, u.usuario AS usuario
+    FROM movimentos m
+    JOIN usuarios u ON u.id = m.usuario_id
+    WHERE m.codigo_id = ? AND DATE(m.horario) = ?
+    ORDER BY m.horario ASC
+  ";
+  $stmt = $conn->prepare($sqlMov);
+  $stmt->execute([$codigoId, $dataTrabalho]);
+  $movs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+  // Monta estado atual (fila) e timeline
+  $temEstoque = false; $temEmbalagem = false; $temConferencia = false;
+  $infoEstoque = null; $infoEmbalagem = null; $infoConferencia = null;
+
+  foreach ($movs as $m) {
+    if ($m['etapa']==='estoque')     { $temEstoque=true;     $infoEstoque=$m; }
+    if ($m['etapa']==='embalagem')   { $temEmbalagem=true;   $infoEmbalagem=$m; }
+    if ($m['etapa']==='conferencia') { $temConferencia=true; $infoConferencia=$m; }
+  }
+
+  // Fila atual = última etapa realizada
+  $filaAtual = 'estoque';
+  if     ($temConferencia) $filaAtual = 'conferencia';
+  elseif ($temEmbalagem)   $filaAtual = 'embalagem';
+  elseif ($temEstoque)     $filaAtual = 'estoque';
+  else                     $filaAtual = 'estoque';
+
+  // Próxima etapa VALIDADA
+  $proxEsperada = proximaEtapaFila($filaAtual);
+
+  // 3) Verifica se a tentativa do usuário está de acordo com a etapa permitida + fluxo
+  $tentativa = $etapaPermitida; // etapa do usuário (perfil)
+
+  // Regras: não pode pular etapas; tentativa tem que ser a próxima esperada
+  if ($tentativa !== $proxEsperada) {
+    // montar modal
+    $timeline = [
+      'estoque'     => $infoEstoque     ? ['usuario'=>$infoEstoque['usuario'],'hora'=>substr($infoEstoque['horario'], 11, 5)] : null,
+      'embalagem'   => $infoEmbalagem   ? ['usuario'=>$infoEmbalagem['usuario'],'hora'=>substr($infoEmbalagem['horario'], 11, 5)] : null,
+      'conferencia' => $infoConferencia ? ['usuario'=>$infoConferencia['usuario'],'hora'=>substr($infoConferencia['horario'], 11, 5)] : null,
     ];
-
-    echo json_encode(['status' => 'redirect', 'location' => 'lista_erro_lotes.php']);
+    $msg = "Fluxo inválido: após " . ucfirst($filaAtual) . ", a próxima etapa é " . ucfirst($proxEsperada) . ".";
+    $conn->rollBack();
+    echo json_encode([
+      'ok' => false,
+      'mensagem' => $msg,
+      'modal' => [
+        'codigo'   => $codigo,
+        'erro'     => $msg,
+        'timeline' => $timeline,
+        'status'   => [
+          'fila'    => ucfirst($filaAtual),
+          'proxima' => ucfirst($proxEsperada),
+        ],
+      ],
+    ]);
     exit;
   }
 
-  // 6) Insere novo bip (com a data de trabalho no campo `horario`)
-  $stmtInsert = $conn->prepare(
-    "INSERT INTO bipagens (codigo, usuario, horario)
-     VALUES (:codigo, :usuario, :horario)"
-  );
+  // 4) Caso esteja correto, insere movimento
+  $stmt = $conn->prepare("INSERT INTO movimentos (codigo_id, etapa, usuario_id) VALUES (?,?,?)");
+  $stmt->execute([$codigoId, $tentativa, $usuarioId]);
 
-  $ok = $stmtInsert->execute([
-    ':codigo'  => $codigo,
-    ':usuario' => $usuario,
-    ':horario' => $horarioParaInsert,
+  $conn->commit();
+
+  // Você pode determinar fechamento de lote aqui (se tiver lógica), por enquanto false
+  echo json_encode([
+    'ok' => true,
+    'mensagem' => 'Registrado com sucesso.',
+    'loteFechado' => false
   ]);
+  exit;
 
-  if ($ok) {
-    echo json_encode(['status' => 'success', 'mensagem' => '✅ Código registrado com sucesso!']);
-  } else {
-    echo json_encode(['status' => 'error', 'mensagem' => 'Erro ao tentar registrar o código.']);
-  }
-} catch (Throwable $e) {
-  echo json_encode(['status' => 'error', 'mensagem' => 'Falha inesperada ao registrar o código.']);
+}catch(Throwable $e){
+  if ($conn->inTransaction()) $conn->rollBack();
+  echo json_encode(['ok'=>false,'mensagem'=>'Erro no servidor.']); exit;
 }
