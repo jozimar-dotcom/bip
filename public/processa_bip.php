@@ -2,166 +2,144 @@
 declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/../config/config.php';
-
 header('Content-Type: application/json; charset=utf-8');
 
-if (empty($_SESSION['usuario']) || empty($_SESSION['id'])) {
-  echo json_encode(['ok'=>false,'mensagem'=>'Sessão expirada. Faça login novamente.']); exit;
+function jexit(array $p){ echo json_encode($p); exit; }
+
+if (empty($_SESSION['usuario'])) {
+  jexit(['ok'=>false,'mensagem'=>'Sessão expirada. Faça login novamente.']);
 }
 
-$usuarioLogin = $_SESSION['usuario'];
-$usuarioId    = (int)$_SESSION['id'];
+function etapaSessao(): string {
+  $raw = strtolower($_SESSION['etapa'] ?? $_SESSION['perfil'] ?? 'estoque');
+  if ($raw === 'user') $raw = 'estoque';
+  return in_array($raw, ['estoque','embalagem','conferencia'], true) ? $raw : 'estoque';
+}
+function dataAtiva(): string {
+  return $_SESSION['data_trabalho'] ?? date('Y-m-d');
+}
+function usuarioId(PDO $pdo, string $usuario): ?int {
+  $st = $pdo->prepare("SELECT id FROM usuarios WHERE usuario = ? LIMIT 1");
+  $st->execute([$usuario]);
+  $r = $st->fetch(PDO::FETCH_ASSOC);
+  return $r ? (int)$r['id'] : null;
+}
+function codigoId(PDO $pdo, string $codigo, string $dataTrabalho): int {
+  $st = $pdo->prepare("SELECT id FROM codigos WHERE codigo = ? LIMIT 1");
+  $st->execute([$codigo]);
+  $r = $st->fetch(PDO::FETCH_ASSOC);
+  if ($r) return (int)$r['id'];
 
-// etapa real usada na regra de fluxo (normaliza)
-$rawEtapa = strtolower($_SESSION['etapa_permitida'] ?? $_SESSION['perfil'] ?? 'estoque');
-$map      = ['user' => 'estoque', 'admin' => 'estoque'];
-$etapaPermitida = $map[$rawEtapa] ?? $rawEtapa;
-if (!in_array($etapaPermitida, ['estoque','embalagem','conferencia'], true)) {
-  $etapaPermitida = 'estoque';
+  $ins = $pdo->prepare("INSERT INTO codigos (codigo, data_trabalho) VALUES (?, ?)");
+  $ins->execute([$codigo, $dataTrabalho]);
+  return (int)$pdo->lastInsertId();
+}
+function etapasFeitas(PDO $pdo, int $codigoId, string $dataTrabalho): array {
+  $st = $pdo->prepare("
+    SELECT m.etapa, u.usuario, m.horario
+    FROM movimentos m
+    LEFT JOIN usuarios u ON u.id = m.usuario_id
+    WHERE m.codigo_id = ? AND m.data_trabalho = ?
+    ORDER BY m.horario ASC
+  ");
+  $st->execute([$codigoId, $dataTrabalho]);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  $timeline = [
+    'estoque'     => ['usuario'=>null,'hora'=>null],
+    'embalagem'   => ['usuario'=>null,'hora'=>null],
+    'conferencia' => ['usuario'=>null,'hora'=>null],
+  ];
+  $ordem = [];
+  foreach ($rows as $r) {
+    $e = $r['etapa'];
+    if (isset($timeline[$e]) && $timeline[$e]['hora'] === null) {
+      $timeline[$e] = [
+        'usuario' => $r['usuario'] ?: null,
+        'hora'    => $r['horario'] ? date('H:i', strtotime($r['horario'])) : null,
+      ];
+      $ordem[] = $e;
+    }
+  }
+  return [$timeline, array_values(array_unique($ordem))];
+}
+function proximaEDepois(array $ordemFeita): array {
+  $seq = ['estoque','embalagem','conferencia'];
+  if (empty($ordemFeita)) return ['estoque','embalagem'];
+  $last = end($ordemFeita);
+  $idx  = array_search($last, $seq, true);
+  if ($idx === false) return ['estoque','embalagem'];
+
+  $next = $seq[$idx+1] ?? null;
+  $after= $seq[$idx+2] ?? null;
+  return [$next, $after];
 }
 
-$dataTrabalho = $_SESSION['data_trabalho'] ?? date('Y-m-d');
-
-// lê JSON
 $payload = json_decode(file_get_contents('php://input'), true);
-$codigo  = trim((string)($payload['codigo'] ?? ''));
+$codigo  = isset($payload['codigo']) ? trim((string)$payload['codigo']) : '';
 
-// validação
 if ($codigo === '' || strlen($codigo) < 12 || strlen($codigo) > 20) {
-  echo json_encode(['ok'=>false,'mensagem'=>'O código deve ter entre 12 e 20 caracteres.']); exit;
+  jexit(['ok'=>false,'mensagem'=>'O código deve ter entre 12 e 20 caracteres.']);
 }
+
+$etapaAtual   = etapaSessao();
+$dataTrabalho = dataAtiva();
+$usuarioNome  = (string)$_SESSION['usuario'];
 
 try {
-  $conn->beginTransaction();
+  $uid = usuarioId($conn, $usuarioNome);
+  if (!$uid) jexit(['ok'=>false,'mensagem'=>'Usuário não encontrado.']);
 
-  // 1) garante existência do codigo na tabela codigos (dia ativo)
-  // tenta inserir; se já existir (unique), pega o id
-  $stmt = $conn->prepare("INSERT INTO codigos (codigo, data_trabalho) VALUES (?, ?) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)");
-  $stmt->execute([$codigo, $dataTrabalho]);
-  $codigoId = (int)$conn->lastInsertId();
+  $codigoId = codigoId($conn, $codigo, $dataTrabalho);
 
-  if ($codigoId === 0) {
-    // fallback: busca id
-    $stmt = $conn->prepare("SELECT id FROM codigos WHERE codigo=? AND data_trabalho=?");
-    $stmt->execute([$codigo, $dataTrabalho]);
-    $codigoId = (int)($stmt->fetchColumn() ?: 0);
-  }
-  if ($codigoId === 0) {
-    $conn->rollBack();
-    echo json_encode(['ok'=>false,'mensagem'=>'Falha ao registrar código do dia.']); exit;
-  }
+  [$timeline, $ordemFeita] = etapasFeitas($conn, $codigoId, $dataTrabalho);
+  [$filaAtual, $proxDepois] = proximaEDepois($ordemFeita);
 
-  // 2) carrega histórico de movimentos do código (no dia)
-  $stmt = $conn->prepare("
-    SELECT m.etapa, m.horario, u.usuario AS usuario_nome
-      FROM movimentos m
-      JOIN usuarios u ON u.id = m.usuario_id
-     WHERE m.codigo_id = ?
-     ORDER BY m.horario ASC
-  ");
-  $stmt->execute([$codigoId]);
-  $movs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  // já existe mesma etapa hoje?
+  $stDup = $conn->prepare("SELECT COUNT(*) c FROM movimentos WHERE codigo_id = ? AND data_trabalho = ? AND etapa = ?");
+  $stDup->execute([$codigoId, $dataTrabalho, $etapaAtual]);
+  $jaTemEtapa = (int)$stDup->fetchColumn();
 
-  // helper para saber quais etapas já passaram
-  $tem = ['estoque'=>null,'embalagem'=>null,'conferencia'=>null];
-  foreach ($movs as $m) {
-    if (isset($tem[$m['etapa']]) && $tem[$m['etapa']] === null) {
-      $tem[$m['etapa']] = $m; // guarda 1ª ocorrência
-    }
+  if ($jaTemEtapa > 0) {
+    jexit([
+      'ok'=>false,
+      'mensagem'=>'Esta etapa já foi registrada para este código.',
+      'showModal'=>true,
+      'modal'=>[
+        'codigo' => $codigo,
+        'timeline' => $timeline,
+        'fila_atual' => $filaAtual,
+        'proxima_etapa' => $proxDepois
+      ]
+    ]);
   }
 
-  // ordem válida
-  $ordem = ['estoque','embalagem','conferencia'];
-  // próxima etapa esperada
-  $prox = null;
-  if (!$tem['estoque'])          $prox = 'estoque';
-  elseif (!$tem['embalagem'])    $prox = 'embalagem';
-  elseif (!$tem['conferencia'])  $prox = 'conferencia';
-  else                           $prox = null; // já conferido
-
-  // Se já conferido, qualquer tentativa gera modal “já concluído”
-  if ($prox === null) {
-    $modal = montarModalFluxo($codigo, $tem, 'O código já foi conferido (processo concluído).', 'Conferência', '—');
-    $conn->commit();
-    echo json_encode(['ok'=>false,'mensagem'=>'Código já está concluído (Conferência).','modal'=>$modal]);
-    exit;
+  // fora de ordem
+  if ($filaAtual !== null && $etapaAtual !== $filaAtual) {
+    $ultima = $ordemFeita ? end($ordemFeita) : 'início';
+    jexit([
+      'ok'=>false,
+      'mensagem'=>"Fluxo inválido: após ".ucfirst($ultima).", a próxima etapa é ".ucfirst($filaAtual).".",
+      'showModal'=>true,
+      'modal'=>[
+        'codigo' => $codigo,
+        'timeline' => $timeline,
+        'fila_atual' => $filaAtual,
+        'proxima_etapa' => $proxDepois
+      ]
+    ]);
   }
 
-  // Se etapa tentada é igual à próxima esperada → registra
-  if ($etapaPermitida === $prox) {
-    // evita duplo registro na mesma etapa
-    $stmt = $conn->prepare("SELECT 1 FROM movimentos WHERE codigo_id=? AND etapa=? LIMIT 1");
-    $stmt->execute([$codigoId, $etapaPermitida]);
-    if ($stmt->fetch()) {
-      $modal = montarModalFluxo($codigo, $tem, 'Esta etapa já foi registrada para este código.', etapaLabel($etapaPermitida), etapaLabel($prox));
-      $conn->commit();
-      echo json_encode(['ok'=>false,'mensagem'=>'Etapa já registrada para este código.','modal'=>$modal]); exit;
-    }
+  // insere movimento válido
+  $ins = $conn->prepare("INSERT INTO movimentos (codigo_id, etapa, usuario_id, data_trabalho) VALUES (?, ?, ?, ?)");
+  $ins->execute([$codigoId, $etapaAtual, $uid, $dataTrabalho]);
 
-    $stmt = $conn->prepare("INSERT INTO movimentos (codigo_id, etapa, usuario_id) VALUES (?,?,?)");
-    $stmt->execute([$codigoId, $etapaPermitida, $usuarioId]);
-
-    $conn->commit();
-    echo json_encode(['ok'=>true,'mensagem'=>'Registrado com sucesso.','loteFechado'=>false]);
-    exit;
-  }
-
-  // Caso contrário, fluxo inválido → monta modal
-  $mensagem = "Fluxo inválido: após " . etapaLabel($proxAnterior = etapaAnterior($prox)) . ", a próxima etapa é " . etapaLabel($prox) . ".";
-  $modal    = montarModalFluxo($codigo, $tem, $mensagem, etapaLabel($prox), etapaLabel($prox));
-  $conn->commit();
-  echo json_encode(['ok'=>false,'mensagem'=>$mensagem,'modal'=>$modal]);
-  exit;
+  jexit([
+    'ok'=>true,
+    'mensagem'=>'Registrado com sucesso.',
+    'loteFechado'=>false
+  ]);
 
 } catch (Throwable $e) {
-  if ($conn->inTransaction()) $conn->rollBack();
-  echo json_encode(['ok'=>false,'mensagem'=>'Erro interno: '.$e->getMessage()]);
-  exit;
-}
-
-/* ================= Helpers ================= */
-
-function etapaLabel(string $e): string {
-  return [
-    'estoque'     => 'Estoque',
-    'embalagem'   => 'Embalagem',
-    'conferencia' => 'Conferência',
-  ][$e] ?? ucfirst($e);
-}
-function etapaAnterior(?string $prox): ?string {
-  if ($prox === 'embalagem') return 'estoque';
-  if ($prox === 'conferencia') return 'embalagem';
-  return null;
-}
-function montarModalFluxo(string $codigo, array $tem, string $mensagem, string $filaAtual, string $proximaEtapa): array {
-  $timeline = [];
-  // Estoque
-  $timeline[] = [
-    'etapa'=>'estoque','etapaLabel'=>'Estoque',
-    'status' => $tem['estoque'] ? 'ok' : 'pendente',
-    'usuario'=> $tem['estoque']['usuario_nome'] ?? '—',
-    'hora'   => isset($tem['estoque']['horario']) ? substr($tem['estoque']['horario'],11,5) : '—'
-  ];
-  // Embalagem
-  $timeline[] = [
-    'etapa'=>'embalagem','etapaLabel'=>'Embalagem',
-    'status' => $tem['embalagem'] ? 'ok' : 'pendente',
-    'usuario'=> $tem['embalagem']['usuario_nome'] ?? '—',
-    'hora'   => isset($tem['embalagem']['horario']) ? substr($tem['embalagem']['horario'],11,5) : '—'
-  ];
-  // Conferência
-  $timeline[] = [
-    'etapa'=>'conferencia','etapaLabel'=>'Conferência',
-    'status' => $tem['conferencia'] ? 'ok' : 'pendente',
-    'usuario'=> $tem['conferencia']['usuario_nome'] ?? '—',
-    'hora'   => isset($tem['conferencia']['horario']) ? substr($tem['conferencia']['horario'],11,5) : '—'
-  ];
-
-  return [
-    'mensagem'     => $mensagem,
-    'codigo'       => $codigo,
-    'timeline'     => $timeline,
-    'filaAtual'    => $filaAtual,
-    'proximaEtapa' => $proximaEtapa,
-  ];
+  jexit(['ok'=>false,'mensagem'=>'Erro no servidor.']);
 }
