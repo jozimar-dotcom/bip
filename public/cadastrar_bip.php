@@ -189,6 +189,15 @@ const s1 = document.getElementById('s1'), s2 = document.getElementById('s2'), s3
 const fila = document.getElementById('fila'), prox = document.getElementById('prox');
 const mPrint = document.getElementById('mPrint');
 
+// ====== Controle de foco e bloqueio de leitura ======
+let modalOpen = false;
+function lockScan(lock){
+  modalOpen = !!lock;
+  input.disabled = !!lock;
+  if (!lock) { input.focus(); }
+}
+
+// ====== Modal ======
 function openModal(payload){
   mAlert.style.display = 'block';
   mAlert.textContent = payload.mensagem || 'Fluxo inválido.';
@@ -218,8 +227,12 @@ function openModal(payload){
   mPrint.href = 'relatorio.php?codigo=' + encodeURIComponent(payload.codigo || '');
 
   bd.style.display = 'flex';
+  lockScan(true); // 🔒 bloqueia leitura enquanto o modal está aberto
 }
-function closeModal(){ bd.style.display = 'none'; }
+function closeModal(){
+  bd.style.display = 'none';
+  lockScan(false); // 🔓 reabilita leitura e refoca no input
+}
 mClose.onclick = mOk.onclick = closeModal;
 bd.addEventListener('click', (e)=>{ if (e.target === bd) closeModal(); });
 
@@ -237,14 +250,18 @@ async function salvarDataAtiva(iso){
   }catch(_){}
 }
 
-document.getElementById('hoje').onclick   = ()=>{ const iso=isoLocalComDeslocamento(0); data.value=iso; salvarDataAtiva(iso).then(carregarRecentes); };
-document.getElementById('ontem').onclick  = ()=>{ const iso=isoLocalComDeslocamento(-1); data.value=iso; salvarDataAtiva(iso).then(carregarRecentes); };
-document.getElementById('amanha').onclick = ()=>{ const iso=isoLocalComDeslocamento(1); data.value=iso; salvarDataAtiva(iso).then(carregarRecentes); };
-data.addEventListener('change', ()=> salvarDataAtiva(data.value).then(carregarRecentes));
+// Botões de data: atualiza, recarrega recentes e refoca o campo
+document.getElementById('hoje').onclick   = ()=>{ const iso=isoLocalComDeslocamento(0); data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
+document.getElementById('ontem').onclick  = ()=>{ const iso=isoLocalComDeslocamento(-1); data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
+document.getElementById('amanha').onclick = ()=>{ const iso=isoLocalComDeslocamento(1); data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
+data.addEventListener('change', ()=> salvarDataAtiva(data.value).then(()=>{carregarRecentes(); input.focus();}));
 
-document.addEventListener('keydown',(e)=>{ if(e.key==='.') input.focus(); if(e.key==='Escape') input.value=''; });
+document.addEventListener('keydown',(e)=>{
+  if(e.key==='.') { input.focus(); e.preventDefault(); }
+  if(e.key==='Escape') { input.value=''; input.focus(); }
+});
 
-// últimos do dia ativo (sempre do BD = só sucessos) — agora passando ?date=...
+// últimos do dia ativo (sempre do BD = só sucessos) — passando ?date=...
 async function carregarRecentes(){
   try{
     const url = 'recentes_bips.php?date=' + encodeURIComponent(data.value);
@@ -275,10 +292,11 @@ function bump(){ input.classList.remove('shake'); void input.offsetWidth; input.
 let busy=false;
 // envio
 input.addEventListener('keydown', async (e)=>{
-  if (e.key!=='Enter' || busy) return;
+  // se modal aberto, ignora qualquer Enter
+  if (e.key!=='Enter' || busy || modalOpen) return;
   e.preventDefault();
   const codigo = input.value.trim();
-  if (!codigo) return;
+  if (!codigo) { input.focus(); return; }
 
   // validação cliente 10–20
   if (codigo.length < 10 || codigo.length > 20){
@@ -293,13 +311,12 @@ input.addEventListener('keydown', async (e)=>{
     const r = await fetch('processa_bip.php', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      // envia também a data ativa para o backend
       body: JSON.stringify({codigo, workDate: data.value})
     });
 
     let j=null;
     try{ j = await r.json(); }catch(_){
-      showMsg('err','Falha de comunicação com o servidor.'); bump(); busy=false; return;
+      showMsg('err','Falha de comunicação com o servidor.'); bump(); busy=false; input.focus(); return;
     }
 
     if (j && j.showModal){
@@ -312,8 +329,9 @@ input.addEventListener('keydown', async (e)=>{
       });
       showMsg('err', j.mensagem || 'Fluxo inválido.');
       bump();
-      input.value=''; input.focus();
-      busy=false; return;
+      input.value=''; // limpa para evitar reenvio do mesmo dado
+      busy=false;
+      return; // foco volta ao fechar o modal
     }
 
     if (j && j.ok){
@@ -322,18 +340,18 @@ input.addEventListener('keydown', async (e)=>{
       el.className='item';
       el.innerHTML=`<span>${new Date().toLocaleTimeString('pt-BR').slice(0,5)} · <strong>${codigo}</strong></span><span class="badge ok">OK</span>`;
       ult.prepend(el); while(ult.children.length>4) ult.lastChild.remove();
-      input.value=''; input.focus();
+      input.value='';
       if (j.loteFechado){ lotS.currentTime=0; lotS.play().catch(()=>{}); }
       carregarRecentes();
-      busy=false; return;
+      busy=false; input.focus(); return;
     }
 
     showMsg('err', (j && j.mensagem) ? j.mensagem : 'Erro no servidor.');
-    bump(); input.value=''; input.focus(); busy=false;
+    bump(); input.value=''; busy=false; input.focus();
 
   }catch(_){
     showMsg('err','Falha de comunicação com o servidor.');
-    bump(); input.value=''; input.focus(); busy=false;
+    bump(); input.value=''; busy=false; input.focus();
   }
 });
 
@@ -342,6 +360,7 @@ input.addEventListener('keydown', async (e)=>{
   const dSessao = '<?= htmlspecialchars($dataAtiva) ?>';
   data.value = dSessao; ativa.textContent = fmtBR(dSessao);
   carregarRecentes();
+  input.focus(); // garante foco inicial
 })();
 </script>
 </body>
