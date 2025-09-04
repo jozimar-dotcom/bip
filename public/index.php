@@ -6,52 +6,74 @@ error_reporting(E_ALL);
 session_start();
 require_once __DIR__ . '/../config/config.php';
 
-if (isset($_SESSION['usuario'])) {
-    switch ($_SESSION['perfil']) {
-        case 'admin':
-            header("Location: dashboard.php");
-            break;
-        case 'user':
-            header("Location: dashboard_user.php");
-            break;
-        case 'conferente':
-            header("Location: dashboard_conferente.php");
-            break;
-        default:
-            header("Location: index.php");
+/**
+ * Se já estiver logado, só redireciona conforme o perfil atual.
+ * Agora também garantimos que a etapa esteja na sessão.
+ */
+if (!empty($_SESSION['usuario'])) {
+    if (empty($_SESSION['etapa'])) {
+        // garante etapa na sessão se ficou faltando em logins antigos
+        try {
+            $stmt = $conn->prepare("SELECT etapa_permitida FROM usuarios WHERE id = ?");
+            $stmt->execute([$_SESSION['id'] ?? 0]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $_SESSION['etapa'] = $row['etapa_permitida'] ?? 'estoque';
+        } catch (\Throwable $e) {
+            $_SESSION['etapa'] = 'estoque';
+        }
     }
-    exit;
+
+    // Data de trabalho padrão (se ainda não houver)
+    if (empty($_SESSION['data_trabalho'])) {
+        $_SESSION['data_trabalho'] = date('Y-m-d');
+    }
+
+    switch ($_SESSION['perfil'] ?? '') {
+        case 'admin':
+            header("Location: dashboard.php"); exit;
+        case 'user':
+            header("Location: dashboard_user.php"); exit;
+        case 'conferente':
+            header("Location: dashboard_conferente.php"); exit;
+        default:
+            header("Location: index.php"); exit;
+    }
 }
 
 $msg = '';
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    $usuario = $_POST['usuario'];
-    $senha = $_POST['senha'];
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $usuario = trim($_POST['usuario'] ?? '');
+    $senha   = (string)($_POST['senha'] ?? '');
 
+    // Busca o usuário
     $stmt = $conn->prepare("SELECT * FROM usuarios WHERE usuario = ?");
     $stmt->execute([$usuario]);
     $usuario_data = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($usuario_data && password_verify($senha, $usuario_data['senha'])) {
+        // Login OK
         session_regenerate_id(true);
+        $_SESSION['id']      = $usuario_data['id'];
         $_SESSION['usuario'] = $usuario_data['usuario'];
-        $_SESSION['perfil'] = $usuario_data['perfil'];
-        $_SESSION['id'] = $usuario_data['id'];
+        $_SESSION['perfil']  = $usuario_data['perfil'];
+        // >>> NOVO: etapa do fluxo (estoque/embalagem/conferencia/admin)
+        $_SESSION['etapa']   = $usuario_data['etapa_permitida'] ?? 'estoque';
+
+        // Data de trabalho padrão (usada nas telas de bip/relatórios)
+        if (empty($_SESSION['data_trabalho'])) {
+            $_SESSION['data_trabalho'] = date('Y-m-d');
+        }
 
         switch ($_SESSION['perfil']) {
             case 'admin':
-                header("Location: dashboard.php");
-                break;
+                header("Location: dashboard.php"); exit;
             case 'user':
-                header("Location: dashboard_user.php");
-                break;
+                header("Location: dashboard_user.php"); exit;
             case 'conferente':
-                header("Location: dashboard_conferente.php");
-                break;
+                header("Location: dashboard_conferente.php"); exit;
             default:
-                header("Location: index.php");
+                header("Location: index.php"); exit;
         }
-        exit;
     } else {
         $msg = "Usuário ou senha inválidos!";
     }
@@ -73,13 +95,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     </div>
     <h4 class="mb-4">Login</h4>
 
-    <?php if ($msg): ?>
-        <div class="alert alert-danger"><?= $msg ?></div>
+    <?php if (!empty($msg)): ?>
+        <div class="alert alert-danger"><?= htmlspecialchars($msg) ?></div>
     <?php endif; ?>
 
-    <form method="POST">
+    <form method="POST" autocomplete="off">
         <div class="mb-3 text-start">
-            <input type="text" name="usuario" class="form-control" placeholder="Usuário" required>
+            <input type="text" name="usuario" class="form-control" placeholder="Usuário" required autofocus>
         </div>
         <div class="mb-3 text-start">
             <input type="password" name="senha" class="form-control" placeholder="Senha" required>
@@ -89,7 +111,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 </div>
 
 <footer class="text-light py-2 mt-4" style="font-size: 0.85rem;">
-    © 2025 MULTCABOS | Desenvolvido por Infolondrina
+    © <?= date('Y') ?> MULTCABOS | Desenvolvido por Infolondrina
 </footer>
 
 </body>
