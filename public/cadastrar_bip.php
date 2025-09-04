@@ -59,9 +59,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
     input[type="date"]:focus{outline:none;border-color:#111827}
     .input-giant{width:100%;padding:16px 18px;border:2px solid #111827;border-radius:12px;font-size:18px}
     .input-giant:focus{outline:none;box-shadow:0 0 0 4px rgba(17,24,39,.1)}
-    .msg{margin-top:10px;padding:12px;border-radius:12px;font-weight:600}
-    .msg.ok{background:#ecfdf5;color:#065f46}
-    .msg.err{background:#fef2f2;color:#991b1b}
+    .msg{margin-top:10px;padding:12px;border-radius:12px;font-weight:600;display:none}
+    .msg.ok{background:#ecfdf5;color:#065f46;display:block}
+    .msg.err{background:#fef2f2;color:#991b1b;display:block}
     .chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 12px}
     .chip{background:var(--chip);border-radius:999px;padding:6px 10px;font-size:12px}
     .list{margin-top:8px;border-top:1px dashed var(--border);padding-top:8px}
@@ -190,13 +190,11 @@ const fila = document.getElementById('fila'), prox = document.getElementById('pr
 const mPrint = document.getElementById('mPrint');
 
 function openModal(payload){
-  // payload: { mensagem, codigo, timeline:{estoque,embalagem,conferencia}, fila_atual, proxima_etapa }
   mAlert.style.display = 'block';
   mAlert.textContent = payload.mensagem || 'Fluxo inválido.';
   mCode.style.display = 'inline-block';
   mCode.textContent = 'Código: ' + (payload.codigo || '');
 
-  // limpa
   [dot1,dot2,dot3].forEach(d=>{ d.className='dot'; });
   [s1,s2,s3].forEach(s=> s.textContent = ' — Hora: —');
 
@@ -207,19 +205,15 @@ function openModal(payload){
   if (emb.hora){ dot2.classList.add('green'); s2.textContent = ` — Usuário: ${emb.usuario||'—'} · Hora: ${emb.hora||'—'}`; }
   if (conf.hora){ dot3.classList.add('green'); s3.textContent = ` — Usuário: ${conf.usuario||'—'} · Hora: ${conf.hora||'—'}`; }
 
-  // marca etapa da fila (azul) quando ainda não realizada
   const filaAtual = payload.fila_atual || null;
   if (filaAtual === 'estoque' && !est.hora) dot1.classList.add('blue');
   if (filaAtual === 'embalagem' && !emb.hora) dot2.classList.add('blue');
   if (filaAtual === 'conferencia' && !conf.hora) dot3.classList.add('blue');
 
-  // textos da lateral – garantimos que próxima etapa seja diferente da fila
   const proxima = (payload.proxima_etapa && payload.proxima_etapa !== filaAtual) ? payload.proxima_etapa : null;
-
   fila.textContent = filaAtual ? (filaAtual.charAt(0).toUpperCase()+filaAtual.slice(1)) : '—';
   prox.textContent = proxima ? (proxima.charAt(0).toUpperCase()+proxima.slice(1)) : '—';
 
-  // imprimir (exemplo simples – opcional)
   mPrint.style.display = 'inline-block';
   mPrint.href = 'relatorio.php?codigo=' + encodeURIComponent(payload.codigo || '');
 
@@ -250,10 +244,11 @@ data.addEventListener('change', ()=> salvarDataAtiva(data.value).then(carregarRe
 
 document.addEventListener('keydown',(e)=>{ if(e.key==='.') input.focus(); if(e.key==='Escape') input.value=''; });
 
-// últimos do dia ativo (sempre do BD = só sucessos)
+// últimos do dia ativo (sempre do BD = só sucessos) — agora passando ?date=...
 async function carregarRecentes(){
   try{
-    const r = await fetch('recentes_bips.php',{cache:'no-store'});
+    const url = 'recentes_bips.php?date=' + encodeURIComponent(data.value);
+    const r = await fetch(url, {cache:'no-store'});
     const j = await r.json();
     if (!j.ok) return;
     ult.innerHTML='';
@@ -272,7 +267,7 @@ function showMsg(type,text){
   msg.textContent=text;
   msg.style.display='block';
   if(type==='ok'){ okS.currentTime=0; okS.play().catch(()=>{}); }
-  else{ errS.currentTime=0; errS.play().catch(()=>{}); }
+  else if(type==='err'){ errS.currentTime=0; errS.play().catch(()=>{}); }
 }
 function bump(){ input.classList.remove('shake'); void input.offsetWidth; input.classList.add('shake'); if(navigator.vibrate) navigator.vibrate(80); }
 
@@ -285,9 +280,9 @@ input.addEventListener('keydown', async (e)=>{
   const codigo = input.value.trim();
   if (!codigo) return;
 
-  // validação cliente 12–20
-  if (codigo.length < 12 || codigo.length > 20){
-    showMsg('err','O código deve ter entre 12 e 20 caracteres.');
+  // validação cliente 10–20
+  if (codigo.length < 10 || codigo.length > 20){
+    showMsg('err','O código deve ter entre 10 e 20 caracteres.');
     bump(); input.value=''; input.focus(); return;
   }
 
@@ -298,17 +293,16 @@ input.addEventListener('keydown', async (e)=>{
     const r = await fetch('processa_bip.php', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({codigo})
+      // envia também a data ativa para o backend
+      body: JSON.stringify({codigo, workDate: data.value})
     });
 
     let j=null;
     try{ j = await r.json(); }catch(_){
-      const txt = await r.text();
       showMsg('err','Falha de comunicação com o servidor.'); bump(); busy=false; return;
     }
 
     if (j && j.showModal){
-      // erro mas modal explicativo (duplicidade / fora de ordem)
       openModal({
         mensagem: j.mensagem || 'Fluxo inválido.',
         codigo:   (j.modal && j.modal.codigo) || codigo,
@@ -324,18 +318,16 @@ input.addEventListener('keydown', async (e)=>{
 
     if (j && j.ok){
       showMsg('ok', j.mensagem || 'Registrado com sucesso.');
-      // lista superior apenas SUCESSOS
       const el=document.createElement('div');
       el.className='item';
       el.innerHTML=`<span>${new Date().toLocaleTimeString('pt-BR').slice(0,5)} · <strong>${codigo}</strong></span><span class="badge ok">OK</span>`;
       ult.prepend(el); while(ult.children.length>4) ult.lastChild.remove();
       input.value=''; input.focus();
       if (j.loteFechado){ lotS.currentTime=0; lotS.play().catch(()=>{}); }
-      carregarRecentes(); // sincroniza com BD
+      carregarRecentes();
       busy=false; return;
     }
 
-    // erro sem modal
     showMsg('err', (j && j.mensagem) ? j.mensagem : 'Erro no servidor.');
     bump(); input.value=''; input.focus(); busy=false;
 
