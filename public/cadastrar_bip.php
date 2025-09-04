@@ -7,9 +7,17 @@ if (empty($_SESSION['usuario'])) {
   header('Location: index.php'); exit;
 }
 
-$usuario  = $_SESSION['usuario'];
-$etapaRaw = strtolower($_SESSION['etapa'] ?? $_SESSION['perfil'] ?? 'estoque');
-$etapa    = ($etapaRaw === 'user') ? 'ESTOQUE' : strtoupper($etapaRaw);
+$usuario   = $_SESSION['usuario'];
+$perfilRaw = strtolower($_SESSION['perfil'] ?? $_SESSION['etapa'] ?? 'estoque');
+$etapaRaw  = strtolower($_SESSION['etapa']  ?? $_SESSION['perfil'] ?? 'estoque');
+$etapa     = ($etapaRaw === 'user') ? 'ESTOQUE' : strtoupper($etapaRaw);
+
+// rota de “voltar ao dashboard”
+switch ($perfilRaw) {
+  case 'admin':      $backUrl = 'dashboard.php'; break;
+  case 'conferente': $backUrl = 'dashboard_conferente.php'; break;
+  default:           $backUrl = 'dashboard_user.php';
+}
 
 $dataAtiva = $_SESSION['data_trabalho'] ?? date('Y-m-d');
 
@@ -46,6 +54,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;color:var(--text)}
     .wrap{max-width:900px;margin:28px auto;padding:0 16px}
+    .back{display:inline-block;margin-bottom:10px;text-decoration:none;color:#374151}
+    .back:hover{opacity:.9}
     .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:20px}
     .head{display:flex;align-items:center;justify-content:space-between}
     .brand{font-weight:800;font-size:18px}
@@ -95,6 +105,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
 </head>
 <body>
   <div class="wrap">
+    <!-- 🔙 voltar -->
+    <a class="back" href="<?= htmlspecialchars($backUrl) ?>">‹ Voltar ao Dashboard</a>
+
     <div class="card">
       <div class="head">
         <div class="brand"><span class="r">MULT</span><span class="k">CABOS</span></div>
@@ -156,7 +169,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
         </div>
       </div>
       <div class="modal-footer">
-        <a id="mPrint" class="btn-ghost" target="_blank" style="display:none">Imprimir detalhes</a>
+        <!-- botão de imprimir que NÃO abre nova aba -->
+        <button id="mPrint" class="btn-ghost" style="display:none">Imprimir detalhes</button>
         <button id="mOk" class="btn-primary">Ok, entendi</button>
       </div>
     </div>
@@ -188,6 +202,8 @@ const dot1 = document.getElementById('d1'), dot2 = document.getElementById('d2')
 const s1 = document.getElementById('s1'), s2 = document.getElementById('s2'), s3 = document.getElementById('s3');
 const fila = document.getElementById('fila'), prox = document.getElementById('prox');
 const mPrint = document.getElementById('mPrint');
+
+let lastPrintUrl = null; // guarda o URL do relatório para o print inline
 
 // ====== Controle de foco e bloqueio de leitura ======
 let modalOpen = false;
@@ -223,8 +239,9 @@ function openModal(payload){
   fila.textContent = filaAtual ? (filaAtual.charAt(0).toUpperCase()+filaAtual.slice(1)) : '—';
   prox.textContent = proxima ? (proxima.charAt(0).toUpperCase()+proxima.slice(1)) : '—';
 
+  // URL do relatório para impressão inline
+  lastPrintUrl = 'relatorio.php?codigo=' + encodeURIComponent(payload.codigo || '');
   mPrint.style.display = 'inline-block';
-  mPrint.href = 'relatorio.php?codigo=' + encodeURIComponent(payload.codigo || '');
 
   bd.style.display = 'flex';
   lockScan(true); // 🔒 bloqueia leitura enquanto o modal está aberto
@@ -235,6 +252,32 @@ function closeModal(){
 }
 mClose.onclick = mOk.onclick = closeModal;
 bd.addEventListener('click', (e)=>{ if (e.target === bd) closeModal(); });
+
+// ====== Impressão inline (sem nova aba) ======
+mPrint.addEventListener('click', (e)=>{
+  e.preventDefault();
+  if (!lastPrintUrl) return;
+
+  // cria um iframe invisível, carrega o relatório e dispara print()
+  const ifr = document.createElement('iframe');
+  ifr.style.position = 'fixed';
+  ifr.style.right = '0';
+  ifr.style.bottom = '0';
+  ifr.style.width = '0';
+  ifr.style.height = '0';
+  ifr.style.border = '0';
+  ifr.src = lastPrintUrl;
+  document.body.appendChild(ifr);
+
+  ifr.onload = () => {
+    try {
+      ifr.contentWindow.focus();
+      ifr.contentWindow.print();
+    } catch(_){}
+    // remove depois de um tempo
+    setTimeout(()=> document.body.removeChild(ifr), 2000);
+  };
+});
 
 // Helpers de data
 const fmtBR = s => { const [y,m,d] = s.split('-'); return `${d}/${m}/${y}`; };
