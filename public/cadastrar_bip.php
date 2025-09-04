@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
 
     /* Modal */
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:9998}
-    .modal{width:min(780px,92vw);background:#fff;border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.18);overflow:hidden}
+    .modal{width:min(900px,92vw);background:#fff;border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.18);overflow:hidden}
     .modal-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
     .modal-title{font-weight:800}
     .modal-body{padding:16px}
@@ -95,9 +95,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
     .dot.blue{background:#2563eb}
     .label{font-weight:700}
     .sub{font-size:12px;color:#6b7280;margin-left:6px}
-    .modal-footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end}
+    .modal-footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
     .btn-primary{background:#111827;color:#fff;border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
     .btn-ghost{background:#eef1f4;border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;margin-right:auto}
+
+    /* Pré-visualização embutida */
+    #previewWrap{display:none;margin-top:14px;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#fff}
+    #previewFrame{width:100%;height:60vh;border:0}
 
     .shake{animation:shake .25s linear 2;border-color:#dc2626 !important;box-shadow:0 0 0 4px rgba(220,38,38,.08) !important}
     @keyframes shake{0%{transform:translateX(0)}25%{transform:translateX(-4px)}50%{transform:translateX(4px)}75%{transform:translateX(-4px)}100%{transform:translateX(0)}}
@@ -167,10 +171,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
             </div>
           </div>
         </div>
+
+        <!-- 🔎 pré-visualização embutida do relatório -->
+        <div id="previewWrap">
+          <iframe id="previewFrame" title="Pré-visualização do relatório"></iframe>
+        </div>
       </div>
       <div class="modal-footer">
-        <!-- botão de imprimir que NÃO abre nova aba -->
-        <button id="mPrint" class="btn-ghost" style="display:none">Imprimir detalhes</button>
+        <!-- agora é só visualização; não chama print automaticamente -->
+        <button id="mPrint" class="btn-ghost" style="display:none">Visualizar detalhes</button>
         <button id="mOk" class="btn-primary">Ok, entendi</button>
       </div>
     </div>
@@ -203,7 +212,10 @@ const s1 = document.getElementById('s1'), s2 = document.getElementById('s2'), s3
 const fila = document.getElementById('fila'), prox = document.getElementById('prox');
 const mPrint = document.getElementById('mPrint');
 
-let lastPrintUrl = null; // guarda o URL do relatório para o print inline
+const previewWrap  = document.getElementById('previewWrap');
+const previewFrame = document.getElementById('previewFrame');
+
+let lastPrintUrl = null;
 
 // ====== Controle de foco e bloqueio de leitura ======
 let modalOpen = false;
@@ -239,44 +251,33 @@ function openModal(payload){
   fila.textContent = filaAtual ? (filaAtual.charAt(0).toUpperCase()+filaAtual.slice(1)) : '—';
   prox.textContent = proxima ? (proxima.charAt(0).toUpperCase()+proxima.slice(1)) : '—';
 
-  // URL do relatório para impressão inline
+  // URL do relatório para visualização
   lastPrintUrl = 'relatorio.php?codigo=' + encodeURIComponent(payload.codigo || '');
   mPrint.style.display = 'inline-block';
 
+  // esconde/limpa pré-visualização quando abre o modal
+  previewWrap.style.display = 'none';
+  previewFrame.removeAttribute('src');
+
   bd.style.display = 'flex';
-  lockScan(true); // 🔒 bloqueia leitura enquanto o modal está aberto
+  lockScan(true);
 }
 function closeModal(){
   bd.style.display = 'none';
-  lockScan(false); // 🔓 reabilita leitura e refoca no input
+  // limpa a prévia e reabilita leitura
+  previewFrame.removeAttribute('src');
+  previewWrap.style.display = 'none';
+  lockScan(false);
 }
 mClose.onclick = mOk.onclick = closeModal;
 bd.addEventListener('click', (e)=>{ if (e.target === bd) closeModal(); });
 
-// ====== Impressão inline (sem nova aba) ======
+// ====== Visualização embutida (sem nova aba, sem chamar impressão) ======
 mPrint.addEventListener('click', (e)=>{
   e.preventDefault();
   if (!lastPrintUrl) return;
-
-  // cria um iframe invisível, carrega o relatório e dispara print()
-  const ifr = document.createElement('iframe');
-  ifr.style.position = 'fixed';
-  ifr.style.right = '0';
-  ifr.style.bottom = '0';
-  ifr.style.width = '0';
-  ifr.style.height = '0';
-  ifr.style.border = '0';
-  ifr.src = lastPrintUrl;
-  document.body.appendChild(ifr);
-
-  ifr.onload = () => {
-    try {
-      ifr.contentWindow.focus();
-      ifr.contentWindow.print();
-    } catch(_){}
-    // remove depois de um tempo
-    setTimeout(()=> document.body.removeChild(ifr), 2000);
-  };
+  previewFrame.src = lastPrintUrl;
+  previewWrap.style.display = 'block';
 });
 
 // Helpers de data
