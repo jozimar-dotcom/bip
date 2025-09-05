@@ -7,7 +7,7 @@ header('Content-Type: application/json; charset=utf-8');
 function jexit(array $p){ echo json_encode($p, JSON_UNESCAPED_UNICODE); exit; }
 
 if (empty($_SESSION['usuario'])) {
-  jexit(['ok'=>false,'mensagem'=>'SessÃ£o expirada. FaÃ§a login novamente.']);
+  jexit(['ok'=>false,'mensagem'=>'Sessão expirada. Faça login novamente.']);
 }
 
 function etapaSessao(): string {
@@ -22,7 +22,7 @@ function usuarioId(PDO $pdo, string $usuario): ?int {
   return $r ? (int)$r['id'] : null;
 }
 function codigoId(PDO $pdo, string $codigo, string $dataTrabalho): int {
-  // ðŸ”’ Agora buscando por (codigo, data_trabalho)
+  // chave lógica por (codigo, data_trabalho)
   $st = $pdo->prepare("SELECT id FROM codigos WHERE codigo = ? AND data_trabalho = ? LIMIT 1");
   $st->execute([$codigo, $dataTrabalho]);
   $r = $st->fetch(PDO::FETCH_ASSOC);
@@ -61,6 +61,12 @@ function etapasFeitas(PDO $pdo, int $codigoId, string $dataTrabalho): array {
   }
   return [$timeline, array_values(array_unique($ordem))];
 }
+
+/**
+ * Retorna [filaAtual, proximaDepois].
+ * - Se nada feito:  estoque, depois embalagem
+ * - Se terminou conferência: fila = 'coleta' (Disponível para coleta), proximaDepois = null
+ */
 function proximaEDepois(array $ordemFeita): array {
   $seq = ['estoque','embalagem','conferencia'];
   if (empty($ordemFeita)) return ['estoque','embalagem'];
@@ -68,8 +74,13 @@ function proximaEDepois(array $ordemFeita): array {
   $idx  = array_search($last, $seq, true);
   if ($idx === false) return ['estoque','embalagem'];
 
-  $next = $seq[$idx+1] ?? null;
-  $after= $seq[$idx+2] ?? null;
+  // se já concluiu a última etapa conhecida
+  if ($last === 'conferencia') {
+    return ['coleta', null]; // “Disponível para coleta”
+  }
+
+  $next  = $seq[$idx+1] ?? 'coleta';
+  $after = $seq[$idx+2] ?? null;
   return [$next, $after];
 }
 
@@ -77,16 +88,14 @@ $payload   = json_decode(file_get_contents('php://input'), true);
 $codigo    = isset($payload['codigo']) ? trim((string)$payload['codigo']) : '';
 $workDate  = isset($payload['workDate']) ? (string)$payload['workDate'] : ($_SESSION['data_trabalho'] ?? date('Y-m-d'));
 
-// validaÃ§Ãµes
 $MIN = 10; $MAX = 20;
 if ($codigo === '' || strlen($codigo) < $MIN || strlen($codigo) > $MAX) {
-  jexit(['ok'=>false,'mensagem'=>"O cÃ³digo deve ter entre {$MIN} e {$MAX} caracteres."]);
+  jexit(['ok'=>false,'mensagem'=>"O código deve ter entre {$MIN} e {$MAX} caracteres."]);
 }
 $dt = DateTime::createFromFormat('Y-m-d', $workDate);
 if (!$dt || $dt->format('Y-m-d') !== $workDate) {
   $workDate = date('Y-m-d');
 }
-// opcional: mantÃ©m sessÃ£o em sincronia
 $_SESSION['data_trabalho'] = $workDate;
 
 $etapaAtual   = etapaSessao();
@@ -94,14 +103,68 @@ $usuarioNome  = (string)$_SESSION['usuario'];
 
 try {
   $uid = usuarioId($conn, $usuarioNome);
-  if (!$uid) jexit(['ok'=>false,'mensagem'=>'UsuÃ¡rio nÃ£o encontrado.']);
+  if (!$uid) jexit(['ok'=>false,'mensagem'=>'Usuário não encontrado.']);
 
   $codigoId = codigoId($conn, $codigo, $workDate);
 
   [$timeline, $ordemFeita] = etapasFeitas($conn, $codigoId, $workDate);
   [$filaAtual, $proxDepois] = proximaEDepois($ordemFeita);
 
-  // jÃ¡ existe mesma etapa nesse dia?
+  // mensagens específicas de pré-requisito
+  if ($etapaAtual === 'embalagem' && empty($timeline['estoque']['hora'])) {
+    jexit([
+      'ok'=>false,
+      'mensagem'=>'Não há registro de bip do Estoque para este código.',
+      'showModal'=>true,
+      'modal'=>[
+        'codigo'=>$codigo, 'timeline'=>$timeline,
+        'fila_atual'=>'estoque', 'proxima_etapa'=>'embalagem',
+        'data'=>$workDate
+      ]
+    ]);
+  }
+  if ($etapaAtual === 'conferencia') {
+    if (empty($timeline['estoque']['hora'])) {
+      jexit([
+        'ok'=>false,
+        'mensagem'=>'Não há registro de bip do Estoque para este código.',
+        'showModal'=>true,
+        'modal'=>[
+          'codigo'=>$codigo, 'timeline'=>$timeline,
+          'fila_atual'=>'estoque', 'proxima_etapa'=>'embalagem',
+          'data'=>$workDate
+        ]
+      ]);
+    }
+    if (empty($timeline['embalagem']['hora'])) {
+      jexit([
+        'ok'=>false,
+        'mensagem'=>'Não há registro de bip da Embalagem para este código.',
+        'showModal'=>true,
+        'modal'=>[
+          'codigo'=>$codigo, 'timeline'=>$timeline,
+          'fila_atual'=>'embalagem', 'proxima_etapa'=>'conferencia',
+          'data'=>$workDate
+        ]
+      ]);
+    }
+  }
+
+  // se todas as etapas já foram concluídas (fila = coleta)
+  if ($filaAtual === 'coleta') {
+    jexit([
+      'ok'=>false,
+      'mensagem'=>'Código concluído — já está “Disponível para coleta”.',
+      'showModal'=>true,
+      'modal'=>[
+        'codigo'=>$codigo, 'timeline'=>$timeline,
+        'fila_atual'=>'coleta', 'proxima_etapa'=>'coleta',
+        'data'=>$workDate
+      ]
+    ]);
+  }
+
+  // já existe a mesma etapa nesse dia?
   $stDup = $conn->prepare("SELECT COUNT(*) c FROM movimentos WHERE codigo_id = ? AND data_trabalho = ? AND etapa = ?");
   $stDup->execute([$codigoId, $workDate, $etapaAtual]);
   $jaTemEtapa = (int)$stDup->fetchColumn();
@@ -109,47 +172,39 @@ try {
   if ($jaTemEtapa > 0) {
     jexit([
       'ok'=>false,
-      'mensagem'=>'Esta etapa jÃ¡ foi registrada para este cÃ³digo.',
+      'mensagem'=>'Esta etapa já foi registrada para este código.',
       'showModal'=>true,
       'modal'=>[
-        'codigo'        => $codigo,
-        'timeline'      => $timeline,
-        'fila_atual'    => $filaAtual,
-        'proxima_etapa' => $proxDepois,
-        'data'          => $workDate,
+        'codigo'=>$codigo, 'timeline'=>$timeline,
+        'fila_atual'=>$filaAtual, 'proxima_etapa'=>$proxDepois ?? $filaAtual,
+        'data'=>$workDate
       ]
     ]);
   }
 
-  // fora de ordem
+  // fora de ordem (ex: tentando Conferência quando fila é Embalagem)
   if ($filaAtual !== null && $etapaAtual !== $filaAtual) {
-    $ultima = $ordemFeita ? end($ordemFeita) : 'inÃ­cio';
+    $ultima = $ordemFeita ? end($ordemFeita) : 'início';
     jexit([
       'ok'=>false,
-      'mensagem'=>"Fluxo invÃ¡lido: apÃ³s ".ucfirst($ultima).", a prÃ³xima etapa Ã© ".ucfirst($filaAtual).".",
+      'mensagem'=>"Fluxo inválido: após ".ucfirst($ultima).", a próxima etapa é ".ucfirst($filaAtual).".",
       'showModal'=>true,
       'modal'=>[
-        'codigo'        => $codigo,
-        'timeline'      => $timeline,
-        'fila_atual'    => $filaAtual,
-        'proxima_etapa' => $proxDepois,
-        'data'          => $workDate,
+        'codigo'=>$codigo, 'timeline'=>$timeline,
+        'fila_atual'=>$filaAtual, 'proxima_etapa'=>$proxDepois ?? $filaAtual,
+        'data'=>$workDate
       ]
     ]);
   }
 
-  // registra
+  // registra movimento da etapa válida
   $ins = $conn->prepare("
     INSERT INTO movimentos (codigo_id, etapa, usuario_id, data_trabalho, horario)
     VALUES (?,?,?,?,NOW())
   ");
   $ins->execute([$codigoId, $etapaAtual, $uid, $workDate]);
 
-  jexit([
-    'ok'=>true,
-    'mensagem'=>'Registrado com sucesso.',
-    'loteFechado'=>false
-  ]);
+  jexit(['ok'=>true, 'mensagem'=>'Registrado com sucesso.', 'loteFechado'=>false]);
 
 } catch (Throwable $e) {
   jexit(['ok'=>false,'mensagem'=>'Erro no servidor.']);
