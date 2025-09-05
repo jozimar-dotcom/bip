@@ -1,89 +1,57 @@
 <?php
+declare(strict_types=1);
 session_start();
-require_once '../config/config.php';
+require_once __DIR__ . '/../config/config.php';
 
-if (!isset($_SESSION['usuario'])) {
-    header("Location: index.php");
-    exit();
-}
+if (empty($_SESSION['usuario']) || ($_SESSION['perfil'] ?? '') !== 'admin') { header('HTTP/1.1 403'); echo 'Acesso negado.'; exit; }
+
+$conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+$id = (int)($_GET['id'] ?? 0);
+$st = $conn->prepare("SELECT id, usuario FROM usuarios WHERE id=?");
+$st->execute([$id]);
+$u = $st->fetch(PDO::FETCH_ASSOC);
+if (!$u) { echo 'Usuário não encontrado.'; exit; }
+
+if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16));
+$csrf = $_SESSION['csrf'];
 
 $msg = '';
+if ($_SERVER['REQUEST_METHOD']==='POST') {
+  if (!hash_equals($csrf, $_POST['__csrf'] ?? '')) { $msg = 'Falha de segurança.'; }
+  else {
+    try {
+      $senha = (string)($_POST['senha'] ?? '');
+      if ($senha === '') throw new Exception('Informe a nova senha.');
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $senhaAtual = $_POST['senha_atual'] ?? '';
-    $novaSenha = $_POST['nova_senha'] ?? '';
-    $confirmarSenha = $_POST['confirmar_senha'] ?? '';
-    $usuario = $_SESSION['usuario'];
-
-    $stmt = $conn->prepare("SELECT senha FROM usuarios WHERE usuario = ?");
-    $stmt->execute([$usuario]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$user || !password_verify($senhaAtual, $user['senha'])) {
-        $msg = "<div class='alert alert-danger'>Senha atual incorreta.</div>";
-    } elseif ($novaSenha !== $confirmarSenha) {
-        $msg = "<div class='alert alert-warning'>As senhas não coincidem.</div>";
-    } else {
-        $novaSenhaHash = password_hash($novaSenha, PASSWORD_DEFAULT);
-        $update = $conn->prepare("UPDATE usuarios SET senha = ? WHERE usuario = ?");
-        $update->execute([$novaSenhaHash, $usuario]);
-        $_SESSION['msg_sucesso'] = "Senha alterada com sucesso.";
-        header("Location: usuarios.php");
-        exit;
-    }
+      $hash = password_hash($senha, PASSWORD_DEFAULT);
+      $up = $conn->prepare("UPDATE usuarios SET senha=? WHERE id=?");
+      $up->execute([$hash, $id]);
+      $msg = 'Senha atualizada.';
+    } catch (Throwable $e) { $msg = 'Erro: '.$e->getMessage(); }
+  }
 }
 ?>
-
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <title>Trocar Senha - MULTCABOS</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body {
-            background-color: #f8f9fa;
-        }
-    </style>
-</head>
-<body class="d-flex flex-column min-vh-100">
-
-<?php include_once '../includes/header.php'; ?>
-<?php include_once '../includes/voltar_dashboard.php'; ?>
-
-<div class="container py-5">
-    <div class="card mx-auto shadow-sm" style="max-width: 500px;">
-        <div class="card-header text-center bg-primary text-white fw-bold">Trocar Senha</div>
-        <div class="card-body">
-            <?= $msg ?>
-            <form method="POST">
-                <div class="mb-3">
-                    <label for="usuario" class="form-label">Usuário</label>
-                    <input type="text" id="usuario" class="form-control bg-light text-muted" value="<?= htmlspecialchars($_SESSION['usuario']) ?>" readonly>
-                </div>
-                <div class="mb-3">
-                    <label for="senha_atual" class="form-label">Senha Atual</label>
-                    <input type="password" name="senha_atual" class="form-control" required>
-                </div>
-                <div class="mb-3">
-                    <label for="nova_senha" class="form-label">Nova Senha</label>
-                    <input type="password" name="nova_senha" class="form-control" required>
-                </div>
-                <div class="mb-3">
-                    <label for="confirmar_senha" class="form-label">Confirmar Nova Senha</label>
-                    <input type="password" name="confirmar_senha" class="form-control" required>
-                </div>
-                <div class="d-grid">
-                    <button type="submit" class="btn btn-success">Atualizar Senha</button>
-                </div>
-            </form>
-        </div>
-    </div>
+<!DOCTYPE html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trocar senha</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body class="bg-light py-4">
+<div class="container" style="max-width:700px">
+  <h1 class="h4 mb-3">Trocar senha — <?= htmlspecialchars($u['usuario']) ?></h1>
+  <?php if ($msg): ?><div class="alert alert-info"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+  <div class="card shadow-sm p-3">
+    <form method="post" class="row g-3">
+      <input type="hidden" name="__csrf" value="<?= htmlspecialchars($csrf) ?>">
+      <div class="col-12">
+        <label class="form-label">Nova senha</label>
+        <input type="password" name="senha" class="form-control" required>
+      </div>
+      <div class="col-12 d-flex gap-2">
+        <button class="btn btn-primary">Salvar</button>
+        <a class="btn btn-outline-secondary" href="usuarios.php">Voltar</a>
+      </div>
+    </form>
+  </div>
 </div>
-
-<footer class="bg-white text-center text-muted py-3 mt-auto border-top">
-    © 2025 <strong>MULTCABOS</strong> | Desenvolvido por <strong>Infolondrina</strong>
-</footer>
-
-</body>
-</html>
+</body></html>
