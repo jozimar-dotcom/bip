@@ -1,85 +1,63 @@
 <?php
-header('Content-Type: text/html; charset=UTF-8');
-mb_internal_encoding('UTF-8');
+declare(strict_types=1);
 session_start();
-if (!isset($_SESSION['usuario'])) {
-    header("Location: ../index.php");
-    exit();
-}
-$nome = $_SESSION['usuario'] ?? 'Usuário';
-$perfil = $_SESSION['perfil'] ?? 'user';
+require_once __DIR__ . '/../config/config.php';
 
-if ($perfil !== 'admin') {
-    header('Location: dashboard.php');
-    exit();
+if (empty($_SESSION['usuario']) || ($_SESSION['perfil'] ?? '') !== 'admin') {
+  header('HTTP/1.1 403 Forbidden'); echo 'Acesso negado.'; exit;
 }
 
-require_once '../config/config.php';
+$conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-try {
-    $stmt = $conn->query("SELECT usuario, perfil FROM usuarios ORDER BY id DESC");
-    $usuarios = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erro ao buscar usuários: " . $e->getMessage());
-}
+$rows = $conn->query("SELECT id, usuario, perfil, etapa_permitida, criado_em FROM usuarios ORDER BY usuario ASC")
+             ->fetchAll(PDO::FETCH_ASSOC);
 ?>
-
-<?php include '../includes/header.php'; ?>
-
-<main class="flex-grow p-6 bg-gray-100 pb-24">
-    <div class="max-w-6xl mx-auto">
-        <div class="flex items-center justify-between mb-6">
-            <div class="flex items-center space-x-4">
-                <a href="dashboard.php" title="Voltar ao Dashboard" class="flex items-center text-blue-600 hover:text-blue-800">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-                    </svg>
-                    <span class="hidden sm:inline">Voltar</span>
-                </a>
-                <h1 class="text-3xl font-bold text-gray-800">Usuários</h1>
-            </div>
-            <a href="cadastrar_usuario.php" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Novo Usuário</a>
-        </div>
-
-        <div class="mb-4">
-            <input type="text" id="searchInput" placeholder="Pesquisar usuário..." class="w-full sm:w-1/2 px-4 py-2 border rounded shadow-sm" />
-        </div>
-
-        <div class="overflow-x-auto rounded shadow">
-            <table class="min-w-full bg-white">
-                <thead class="bg-gray-200 text-gray-700 text-left">
-                <tr>
-                    <th class="py-3 px-6">Usuário</th>
-                    <th class="py-3 px-6 text-center">Perfil</th>
-                    <th class="py-3 px-6 text-right">Ações</th>
-                </tr>
-                </thead>
-                <tbody id="usuariosTabela">
-                <?php foreach ($usuarios as $usuario): ?>
-                    <tr class="border-b hover:bg-gray-50">
-                        <td class="py-3 px-6"><?php echo htmlspecialchars($usuario['usuario']); ?></td>
-                        <td class="py-3 px-6 text-center"><?php echo ucfirst($usuario['perfil']); ?></td>
-                        <td class="py-3 px-6 text-right space-x-2">
-                            <a href="editar_usuario.php?id=<?php echo $usuario['usuario']; ?>" class="bg-yellow-400 hover:bg-yellow-500 text-white font-bold py-1 px-3 rounded">Editar</a>
-                            <a href="excluir_usuario.php?id=<?php echo $usuario['usuario']; ?>" class="bg-red-600 hover:bg-red-700 text-white font-bold py-1 px-3 rounded">Excluir</a>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usuários</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-4">
+<div class="container">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 m-0">Usuários</h1>
+    <div class="d-flex gap-2">
+      <a class="btn btn-primary" href="cadastrar_usuario.php">+ Novo usuário</a>
+      <a class="btn btn-outline-secondary" href="dashboard.php">← Voltar</a>
     </div>
-</main>
+  </div>
 
-<?php include '../includes/footer.php'; ?>
-
-<script>
-    document.getElementById('searchInput').addEventListener('keyup', function () {
-        let filter = this.value.toLowerCase();
-        let rows = document.querySelectorAll('#usuariosTabela tr');
-        rows.forEach(row => {
-            let user = row.cells[0].textContent.toLowerCase();
-            row.style.display = user.includes(filter) ? '' : 'none';
-        });
-    });
-</script>
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table align-middle m-0">
+        <thead class="table-light">
+          <tr>
+            <th>#</th><th>Usuário</th><th>Perfil</th><th>Etapa</th><th>Criado em</th><th style="width:220px">Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+        <?php foreach ($rows as $r): ?>
+          <tr>
+            <td><?= (int)$r['id'] ?></td>
+            <td><?= htmlspecialchars($r['usuario']) ?></td>
+            <td><span class="badge text-bg-dark"><?= htmlspecialchars($r['perfil']) ?></span></td>
+            <td><span class="badge text-bg-secondary"><?= htmlspecialchars($r['etapa_permitida'] ?? '-') ?></span></td>
+            <td><?= htmlspecialchars($r['criado_em']) ?></td>
+            <td class="d-flex gap-2">
+              <a class="btn btn-sm btn-primary" href="editar_usuario.php?id=<?= (int)$r['id'] ?>">Editar</a>
+              <a class="btn btn-sm btn-warning" href="trocar_senha.php?id=<?= (int)$r['id'] ?>">Trocar senha</a>
+              <a class="btn btn-sm btn-outline-danger" href="excluir_usuario.php?id=<?= (int)$r['id'] ?>" onclick="return confirm('Excluir este usuário?');">Excluir</a>
+            </td>
+          </tr>
+        <?php endforeach; if (!count($rows)): ?>
+          <tr><td colspan="6" class="text-muted text-center py-4">Nenhum usuário encontrado.</td></tr>
+        <?php endif; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body>
+</html>
