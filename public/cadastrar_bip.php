@@ -12,7 +12,7 @@ $perfilRaw = strtolower($_SESSION['perfil'] ?? $_SESSION['etapa'] ?? 'estoque');
 $etapaRaw  = strtolower($_SESSION['etapa']  ?? $_SESSION['perfil'] ?? 'estoque');
 $etapa     = ($etapaRaw === 'user') ? 'ESTOQUE' : strtoupper($etapaRaw);
 
-// rota de “voltar ao dashboard”
+// rota do “voltar”
 switch ($perfilRaw) {
   case 'admin':      $backUrl = 'dashboard.php'; break;
   case 'conferente': $backUrl = 'dashboard_conferente.php'; break;
@@ -21,7 +21,7 @@ switch ($perfilRaw) {
 
 $dataAtiva = $_SESSION['data_trabalho'] ?? date('Y-m-d');
 
-/* ========= AJAX: salvar data de trabalho na sessão ========= */
+/* ========= AJAX: salvar data ========= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
   $d = $_POST['date'] ?? '';
   $ok = false; $msg = 'Data inválida.';
@@ -48,14 +48,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
       --bg:#f5f7fa; --card:#fff; --text:#111827; --muted:#6b7280;
       --brand:#d32f2f; --ok:#16a34a; --err:#dc2626; --chip:#eef1f4;
       --primary:#111827; --shadow:0 8px 24px rgba(0,0,0,.08);
-      --border:#e5e7eb;
-      --blue:#2563eb; --green:#16a34a; --gray:#9ca3af;
+      --border:#e5e7eb; --blue:#2563eb;
     }
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;color:var(--text)}
     .wrap{max-width:900px;margin:28px auto;padding:0 16px}
     .back{display:inline-block;margin-bottom:10px;text-decoration:none;color:#374151}
-    .back:hover{opacity:.9}
     .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:20px}
     .head{display:flex;align-items:center;justify-content:space-between}
     .brand{font-weight:800;font-size:18px}
@@ -64,7 +62,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
     .muted{color:var(--muted)}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
     .btn{display:inline-flex;align-items:center;gap:8px;background:#e9eef6;color:#111827;border:none;border-radius:10px;padding:9px 14px;font-weight:600;cursor:pointer}
-    .btn:hover{filter:brightness(.98)}
     input[type="date"]{height:42px;min-width:280px;padding:0 12px;border:1.5px solid var(--border);border-radius:10px;font:inherit}
     input[type="date"]:focus{outline:none;border-color:#111827}
     .input-giant{width:100%;padding:16px 18px;border:2px solid #111827;border-radius:12px;font-size:18px}
@@ -99,7 +96,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
     .btn-primary{background:#111827;color:#fff;border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
     .btn-ghost{background:#eef1f4;border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;margin-right:auto}
 
-    /* Pré-visualização embutida */
     #previewWrap{display:none;margin-top:14px;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#fff}
     #previewFrame{width:100%;height:60vh;border:0}
 
@@ -109,7 +105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
 </head>
 <body>
   <div class="wrap">
-    <!-- 🔙 voltar -->
     <a class="back" href="<?= htmlspecialchars($backUrl) ?>">‹ Voltar ao Dashboard</a>
 
     <div class="card">
@@ -162,30 +157,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['__setDate'])) {
           </div>
           <div class="col">
             <div class="line" style="border-bottom:0">
-              <div class="label" style="min-width:120px">Fila atual</div>
+              <div class="label" style="min-width:140px">Fila atual</div>
               <div id="fila" style="font-weight:800"></div>
             </div>
             <div class="line" style="border-bottom:0">
-              <div class="label" style="min-width:120px">Próxima etapa</div>
+              <div class="label" style="min-width:140px">Próxima etapa</div>
               <div id="prox" style="font-weight:800"></div>
             </div>
           </div>
         </div>
 
-        <!-- 🔎 pré-visualização embutida do relatório -->
         <div id="previewWrap">
-          <iframe id="previewFrame" title="Pré-visualização do relatório"></iframe>
+          <iframe id="previewFrame" title="Pré-visualização do código"></iframe>
         </div>
       </div>
       <div class="modal-footer">
-        <!-- agora é só visualização; não chama print automaticamente -->
-        <button id="mPrint" class="btn-ghost" style="display:none">Visualizar detalhes</button>
+        <button id="mPrint" class="btn-ghost" style="display:none">Ver detalhes do código</button>
         <button id="mOk" class="btn-primary">Ok, entendi</button>
       </div>
     </div>
   </div>
 
-  <!-- sons -->
   <audio id="snd-ok"   src="./sucesso.mp3" preload="auto"></audio>
   <audio id="snd-err"  src="./error.mp3"   preload="auto"></audio>
   <audio id="snd-lote" src="../assets/sounds/lote_cheio.mp3" preload="auto"></audio>
@@ -201,7 +193,7 @@ const okS   = document.getElementById('snd-ok');
 const errS  = document.getElementById('snd-err');
 const lotS  = document.getElementById('snd-lote');
 
-// ====== Modal refs ======
+// ===== Modal
 const bd   = document.getElementById('backdrop');
 const mClose = document.getElementById('mClose');
 const mOk    = document.getElementById('mOk');
@@ -216,16 +208,9 @@ const previewWrap  = document.getElementById('previewWrap');
 const previewFrame = document.getElementById('previewFrame');
 
 let lastPrintUrl = null;
-
-// ====== Controle de foco e bloqueio de leitura ======
 let modalOpen = false;
-function lockScan(lock){
-  modalOpen = !!lock;
-  input.disabled = !!lock;
-  if (!lock) { input.focus(); }
-}
+function lockScan(lock){ modalOpen = !!lock; input.disabled = !!lock; if(!lock) input.focus(); }
 
-// ====== Modal ======
 function openModal(payload){
   mAlert.style.display = 'block';
   mAlert.textContent = payload.mensagem || 'Fluxo inválido.';
@@ -235,27 +220,30 @@ function openModal(payload){
   [dot1,dot2,dot3].forEach(d=>{ d.className='dot'; });
   [s1,s2,s3].forEach(s=> s.textContent = ' — Hora: —');
 
-  const tl = payload.timeline || {};
+  const tl  = payload.timeline || {};
   const est = tl.estoque || {}, emb = tl.embalagem || {}, conf = tl.conferencia || {};
 
   if (est.hora){ dot1.classList.add('green'); s1.textContent = ` — Usuário: ${est.usuario||'—'} · Hora: ${est.hora||'—'}`; }
   if (emb.hora){ dot2.classList.add('green'); s2.textContent = ` — Usuário: ${emb.usuario||'—'} · Hora: ${emb.hora||'—'}`; }
   if (conf.hora){ dot3.classList.add('green'); s3.textContent = ` — Usuário: ${conf.usuario||'—'} · Hora: ${conf.hora||'—'}`; }
 
+  const label = { estoque:'Estoque', embalagem:'Embalagem', conferencia:'Conferência', coleta:'Disponível para coleta' };
+
   const filaAtual = payload.fila_atual || null;
-  if (filaAtual === 'estoque' && !est.hora) dot1.classList.add('blue');
-  if (filaAtual === 'embalagem' && !emb.hora) dot2.classList.add('blue');
+  if (filaAtual === 'estoque'     && !est.hora)  dot1.classList.add('blue');
+  if (filaAtual === 'embalagem'   && !emb.hora)  dot2.classList.add('blue');
   if (filaAtual === 'conferencia' && !conf.hora) dot3.classList.add('blue');
 
-  const proxima = (payload.proxima_etapa && payload.proxima_etapa !== filaAtual) ? payload.proxima_etapa : null;
-  fila.textContent = filaAtual ? (filaAtual.charAt(0).toUpperCase()+filaAtual.slice(1)) : '—';
-  prox.textContent = proxima ? (proxima.charAt(0).toUpperCase()+proxima.slice(1)) : '—';
+  // se o back não mandar “depois”, usa a própria fila (inclui 'coleta')
+  const proxima = (payload.proxima_etapa ?? filaAtual) || null;
 
-  // URL do relatório para visualização
-  lastPrintUrl = 'relatorio.php?codigo=' + encodeURIComponent(payload.codigo || '');
+  fila.textContent = filaAtual ? (label[filaAtual] || '—') : '—';
+  prox.textContent = proxima  ? (label[proxima]  || '—') : '—';
+
+  lastPrintUrl = 'preview_codigo.php?codigo=' + encodeURIComponent(payload.codigo || '') +
+                 '&date=' + encodeURIComponent(document.getElementById('data').value);
   mPrint.style.display = 'inline-block';
 
-  // esconde/limpa pré-visualização quando abre o modal
   previewWrap.style.display = 'none';
   previewFrame.removeAttribute('src');
 
@@ -264,7 +252,6 @@ function openModal(payload){
 }
 function closeModal(){
   bd.style.display = 'none';
-  // limpa a prévia e reabilita leitura
   previewFrame.removeAttribute('src');
   previewWrap.style.display = 'none';
   lockScan(false);
@@ -272,7 +259,6 @@ function closeModal(){
 mClose.onclick = mOk.onclick = closeModal;
 bd.addEventListener('click', (e)=>{ if (e.target === bd) closeModal(); });
 
-// ====== Visualização embutida (sem nova aba, sem chamar impressão) ======
 mPrint.addEventListener('click', (e)=>{
   e.preventDefault();
   if (!lastPrintUrl) return;
@@ -280,37 +266,28 @@ mPrint.addEventListener('click', (e)=>{
   previewWrap.style.display = 'block';
 });
 
-// Helpers de data
 const fmtBR = s => { const [y,m,d] = s.split('-'); return `${d}/${m}/${y}`; };
-function isoLocalComDeslocamento(dias=0){
-  const t = new Date(); t.setHours(0,0,0,0); t.setDate(t.getDate()+dias);
-  return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
-}
+function isoLocalComDeslocamento(dias=0){ const t=new Date(); t.setHours(0,0,0,0); t.setDate(t.getDate()+dias); return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`; }
 async function salvarDataAtiva(iso){
-  try{
-    const fd = new FormData(); fd.append('__setDate','1'); fd.append('date', iso);
-    const r = await fetch(location.href, {method:'POST', body:fd});
-    const j = await r.json(); if (j.ok){ ativa.textContent = fmtBR(j.data); localStorage.setItem('data_trabalho', j.data); }
+  try{ const fd=new FormData(); fd.append('__setDate','1'); fd.append('date', iso);
+    const r=await fetch(location.href,{method:'POST',body:fd}); const j=await r.json();
+    if(j.ok){ ativa.textContent=fmtBR(j.data); localStorage.setItem('data_trabalho', j.data); }
   }catch(_){}
 }
 
-// Botões de data: atualiza, recarrega recentes e refoca o campo
-document.getElementById('hoje').onclick   = ()=>{ const iso=isoLocalComDeslocamento(0); data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
+// trocar data mantém foco e recarrega lista
+document.getElementById('hoje').onclick   = ()=>{ const iso=isoLocalComDeslocamento(0);  data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
 document.getElementById('ontem').onclick  = ()=>{ const iso=isoLocalComDeslocamento(-1); data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
-document.getElementById('amanha').onclick = ()=>{ const iso=isoLocalComDeslocamento(1); data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
+document.getElementById('amanha').onclick = ()=>{ const iso=isoLocalComDeslocamento(1);  data.value=iso; salvarDataAtiva(iso).then(()=>{carregarRecentes(); input.focus();}); };
 data.addEventListener('change', ()=> salvarDataAtiva(data.value).then(()=>{carregarRecentes(); input.focus();}));
 
-document.addEventListener('keydown',(e)=>{
-  if(e.key==='.') { input.focus(); e.preventDefault(); }
-  if(e.key==='Escape') { input.value=''; input.focus(); }
-});
+document.addEventListener('keydown',(e)=>{ if(e.key==='.') { input.focus(); e.preventDefault(); } if(e.key==='Escape'){ input.value=''; input.focus(); } });
 
-// últimos do dia ativo (sempre do BD = só sucessos) — passando ?date=...
+// últimos sucessos do dia ativo (?date=)
 async function carregarRecentes(){
   try{
     const url = 'recentes_bips.php?date=' + encodeURIComponent(data.value);
-    const r = await fetch(url, {cache:'no-store'});
-    const j = await r.json();
+    const r = await fetch(url, {cache:'no-store'}); const j = await r.json();
     if (!j.ok) return;
     ult.innerHTML='';
     (j.itens||[]).slice(0,4).forEach(row=>{
@@ -322,34 +299,26 @@ async function carregarRecentes(){
   }catch(_){}
 }
 
-// feedback UI
 function showMsg(type,text){
-  msg.className='msg ' + type;
-  msg.textContent=text;
-  msg.style.display='block';
+  msg.className='msg ' + type; msg.textContent=text; msg.style.display='block';
   if(type==='ok'){ okS.currentTime=0; okS.play().catch(()=>{}); }
   else if(type==='err'){ errS.currentTime=0; errS.play().catch(()=>{}); }
 }
 function bump(){ input.classList.remove('shake'); void input.offsetWidth; input.classList.add('shake'); if(navigator.vibrate) navigator.vibrate(80); }
 
-// proteção contra duplo Enter
 let busy=false;
-// envio
 input.addEventListener('keydown', async (e)=>{
-  // se modal aberto, ignora qualquer Enter
   if (e.key!=='Enter' || busy || modalOpen) return;
   e.preventDefault();
   const codigo = input.value.trim();
   if (!codigo) { input.focus(); return; }
 
-  // validação cliente 10–20
   if (codigo.length < 10 || codigo.length > 20){
     showMsg('err','O código deve ter entre 10 e 20 caracteres.');
     bump(); input.value=''; input.focus(); return;
   }
 
-  busy=true;
-  showMsg('', ''); msg.style.display='none';
+  busy=true; msg.style.display='none';
 
   try{
     const r = await fetch('processa_bip.php', {
@@ -373,9 +342,8 @@ input.addEventListener('keydown', async (e)=>{
       });
       showMsg('err', j.mensagem || 'Fluxo inválido.');
       bump();
-      input.value=''; // limpa para evitar reenvio do mesmo dado
-      busy=false;
-      return; // foco volta ao fechar o modal
+      input.value=''; busy=false;
+      return;
     }
 
     if (j && j.ok){
@@ -399,12 +367,12 @@ input.addEventListener('keydown', async (e)=>{
   }
 });
 
-// inicializa
+// init
 (function init(){
   const dSessao = '<?= htmlspecialchars($dataAtiva) ?>';
   data.value = dSessao; ativa.textContent = fmtBR(dSessao);
   carregarRecentes();
-  input.focus(); // garante foco inicial
+  input.focus();
 })();
 </script>
 </body>
